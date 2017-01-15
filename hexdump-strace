@@ -1,0 +1,101 @@
+#!/usr/bin/env python3
+
+"""
+hexdump-strace
+
+converts the output from `strace -f -xx -y` to a hexdump format
+"""
+
+import re
+import sys
+import argparse
+import fileinput
+from textwrap import wrap
+from binascii import hexlify
+
+
+def hexdump(buf, syscall):
+    """
+    Print bufarray in hexdump format
+    """
+    print("{:30}  ---=== {} ===---".format(" ", syscall.upper()))
+
+    hexbuffer = hexlify(buf).decode()
+    hexstrings = wrap(hexbuffer, 32)
+
+    for offset, hexstring in enumerate(hexstrings):
+
+        ascii_string = ""
+        hexb = ""
+
+        for pos in range(0, len(hexstring) - 1, 2):
+
+            hexval = hexstring[pos:pos+2]
+            decval = int(hexval, 16)
+            chrval = chr(decval)
+
+            ascii_string += chrval if 31 < decval < 127 else '.'
+
+            hexb += hexval + ("  " if pos == 14 else " ")
+
+        print('{:06x}\t{:55}|{:16}|'.format(offset * 16, hexb, ascii_string))
+
+    print()
+
+
+def parse_strace(files, fd=None):
+    """
+    Parse strace output to bufarray by syscall
+    """
+    parse = re.compile(r'(?P<pid>\d+) (?P<syscall>\w+)[(]\d+[<](?P<hexfile>[^>]+)>, "(?P<hexdata>[^"]+)",')
+
+    data = list()
+    hexbuf = bytearray()
+    lastbuf = bytearray()
+    lastsyscall = None
+
+    for line in fileinput.input(files):
+
+        match = parse.match(line)
+
+        if not match: continue
+
+        filename = match.group("hexfile").replace("\\x", "")
+        filename = bytes.fromhex(filename).decode()
+        syscall = match.group("syscall")
+        hexdata = match.group("hexdata").replace("\\x", "")
+
+        if fd and filename != fd: continue
+
+        if lastsyscall is not None:
+            if syscall != lastsyscall:
+                data.append((lastsyscall, hexbuf))
+                hexbuf = bytearray()
+
+        hexbuf += bytearray.fromhex(hexdata)
+        lastsyscall = syscall
+
+    data.append((syscall, hexbuf))
+    return data
+
+
+def main(args):
+
+    hexdata = parse_strace(args.files, fd=args.fd)
+
+    for syscall, hexbuf in hexdata:
+        hexdump(hexbuf, syscall)
+
+
+if __name__ == "__main__":
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        'files', nargs='*',
+        help='input files'
+    )
+    parser.add_argument(
+        "-f", "--fd",
+        help="limit syscalls to the given fd"
+    )
+    main(parser.parse_args())
